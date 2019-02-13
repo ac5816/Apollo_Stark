@@ -13,6 +13,22 @@ import android.util.Log;
 import android.view.View;
 import android.widget.TextView;
 
+import android.annotation.TargetApi;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
+import android.app.PendingIntent;
+import android.app.TaskStackBuilder;
+import android.content.Context;
+import android.content.Intent;
+import android.os.Build;
+import android.support.v7.app.AppCompatActivity;
+import android.os.Bundle;
+import android.app.Notification;
+import android.support.v4.app.NotificationCompat;
+import android.support.v4.app.NotificationManagerCompat;
+import android.view.View;
+import android.widget.Button;
+
 import com.jjoe64.graphview.DefaultLabelFormatter;
 import com.jjoe64.graphview.GraphView;
 import com.jjoe64.graphview.Viewport;
@@ -33,11 +49,22 @@ import java.util.Random;
 
 public class MainActivity extends AppCompatActivity {
 
+    Button mShowNotificationButton;
+    NotificationCompat.Builder mBuilder;
+    NotificationManager mNotificationManager;               // for < OREO
+    private NotificationManagerCompat notificationManager;  // for >= OREO
+    PendingIntent mResultPendingIntent;
+    TaskStackBuilder mTaskStackBuilder;
+    Intent mResultIntent;
+    public static final String CHANNEL_1_ID = "channel1";
+    public static final String CHANNEL_2_ID = "channel2";
+
     MqttHelper mqttHelper;
 
     TextView TempReceived, Temperature;
     TextView TimeReceived, Time;
 
+    Notification notification;
     ConstraintLayout CL;
 
     final String DEGREE = "\u2103";
@@ -70,7 +97,46 @@ public class MainActivity extends AppCompatActivity {
         viewport.setScrollable(true);
         viewport.setScrollable(true); // enables horizontal scrolling
         viewport.setScalable(true); // enables horizontal zooming and scrolling
-        //dat
+
+        //------------------------------------------------------------------------------------------
+
+        String title = "Hot Babe";
+        String message = "Critical Temperature!";
+
+        // ------------------------------------------------------------------------------------------------------
+        // BUILD<OREO
+        //mShowNotificationButton = findViewById(R.id.btnShowNotification);
+
+        mBuilder = new NotificationCompat.Builder(this);
+        mBuilder.setSmallIcon(R.mipmap.hot_babe); //set notification icon
+        mBuilder.setContentTitle(title); //set notification title
+        mBuilder.setContentText(message); //set notification content
+
+        mResultIntent = new Intent(this, MainActivity.class);
+        mTaskStackBuilder = TaskStackBuilder.create(this);
+        mTaskStackBuilder.addParentStack(MainActivity.this);
+
+        //Add the intent that will start the activity to the top stack
+        mTaskStackBuilder.addNextIntent(mResultIntent);
+        mResultPendingIntent = mTaskStackBuilder.getPendingIntent(0,PendingIntent.FLAG_UPDATE_CURRENT);
+        mBuilder.setContentIntent(mResultPendingIntent);
+        mBuilder.setPriority(NotificationCompat.PRIORITY_HIGH);
+        mNotificationManager = (NotificationManager)getSystemService(Context.NOTIFICATION_SERVICE);
+        // --------------------------------------------------------------------------------------------------------
+        //BUILD>=OREO
+        createNotificationChannels();
+        notificationManager = NotificationManagerCompat.from(this);
+        notification = new NotificationCompat.Builder(this, CHANNEL_1_ID)
+                .setSmallIcon(R.mipmap.ic_launcher)
+                .setContentTitle(title)
+                .setContentText(message)
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .build();
+
+        if (lastY>15){
+            notificationManager.notify(1,notification);
+        }
+        // --------------------------------------------------------------------------------------------------------
 
         seriesLine = new LineGraphSeries<DataPoint>();
         seriesLine = new LineGraphSeries<>(getDataPoint());
@@ -201,6 +267,14 @@ public class MainActivity extends AppCompatActivity {
                     seriesLine.setColor(Color.rgb(198,0,0));
                     series.setColor(Color.rgb(198,0,0));
                     //TimeReceived.setTextColor(0x520E00);
+                    //send notification for builds equal greater than OREO
+                    if(Build.VERSION.SDK_INT >= Build.VERSION_CODES.O){
+                        notificationManager.notify(1,notification);
+                    }
+                    //send notification for builds less than OREO
+                    else{
+                        mNotificationManager.notify(1,mBuilder.build());
+                    }
                 }
 
                 else {
@@ -223,5 +297,23 @@ public class MainActivity extends AppCompatActivity {
 
             }
         });
+    }
+
+    public void createNotificationChannels(){
+        if(Build.VERSION.SDK_INT >= Build.VERSION_CODES.O){
+            NotificationChannel channel1 = new NotificationChannel(
+                    CHANNEL_1_ID,
+                    "Channel 1",
+                    NotificationManager.IMPORTANCE_HIGH
+            );
+            NotificationChannel channel2 = new NotificationChannel(
+                    CHANNEL_2_ID,
+                    "Channel 2",
+                    NotificationManager.IMPORTANCE_LOW
+            );
+            NotificationManager manager = getSystemService(NotificationManager.class);
+            manager.createNotificationChannel(channel1);
+            manager.createNotificationChannel(channel2);
+        }
     }
 }
