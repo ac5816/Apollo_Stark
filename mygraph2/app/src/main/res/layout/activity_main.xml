@@ -1,16 +1,38 @@
 <?xml version="1.0" encoding="utf-8"?>
-<RelativeLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    tools:context=".MainActivity">
+    android:orientation="vertical"
+    android:padding="16dp"
+    tools:context="com.example.mygraph2.MainActivity">
+
+    <Button
+        android:id="@+id/btnShowNotification"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Show Notification"
+        tools:ignore="HardcodedText,MissingConstraints"
+        tools:layout_editor_absoluteX="7dp"
+        tools:layout_editor_absoluteY="519dp" />
 
     <com.jjoe64.graphview.GraphView
         android:id="@+id/graph"
+        android:layout_width="match_parent"
+        android:layout_height="391dp"
+        tools:ignore="MissingConstraints"
+        tools:layout_editor_absoluteX="1dp"
+        tools:layout_editor_absoluteY="0dp" />
 
-        android:layout_width="412dp"
-        android:layout_height="358dp"
-        tools:ignore="MissingConstraints" />
+    <Button
+        android:id="@+id/setlimit"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Set Threshold"
+        tools:ignore="HardcodedText,MissingConstraints"
+        tools:layout_editor_absoluteX="7dp"
+        tools:layout_editor_absoluteY="200dp" />
 
-</RelativeLayout>
+
+</LinearLayout>
