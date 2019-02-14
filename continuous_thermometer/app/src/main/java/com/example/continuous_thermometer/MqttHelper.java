@@ -2,6 +2,7 @@ package com.example.continuous_thermometer;
 
 import android.content.Context;
 import android.util.Log;
+import android.widget.Toast;
 
 import org.eclipse.paho.android.service.MqttAndroidClient;
 import org.eclipse.paho.client.mqttv3.DisconnectedBufferOptions;
@@ -16,10 +17,10 @@ import org.eclipse.paho.client.mqttv3.MqttMessage;
 public class MqttHelper {
     public MqttAndroidClient mqttAndroidClient;
 
-    final String serverUri = "tcp://ee-estott-octo.ee.ic.ac.uk:1883";
+    final String serverUri = "tcp://test.mosquitto.org:1883";
 
     final String clientId = "ExampleAndroidClient";
-    final String subscriptionTopic = "IC.embedded/apollostark/#";
+    final String subscriptionTopic = "IC.embedded/apollostark/temperature/#";
 
     public MqttHelper(Context context){
         mqttAndroidClient = new MqttAndroidClient(context, serverUri, clientId);
@@ -86,7 +87,7 @@ public class MqttHelper {
     }
 
 
-    private void subscribeToTopic() {
+    public void subscribeToTopic() {
         try {
             mqttAndroidClient.subscribe(subscriptionTopic, 0, null, new IMqttActionListener() {
                 @Override

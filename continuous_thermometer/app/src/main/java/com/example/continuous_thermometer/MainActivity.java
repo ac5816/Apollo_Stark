@@ -1,5 +1,6 @@
 package com.example.continuous_thermometer;
 
+import android.app.Activity;
 import android.content.Intent;
 import android.graphics.Color;
 import android.graphics.drawable.ColorDrawable;
@@ -11,6 +12,8 @@ import android.support.v7.app.AppCompatActivity;
 import android.support.v7.widget.RecyclerView;
 import android.util.Log;
 import android.view.View;
+import android.view.inputmethod.InputMethodManager;
+import android.widget.EditText;
 import android.widget.TextView;
 
 import android.annotation.TargetApi;
@@ -28,6 +31,7 @@ import android.support.v4.app.NotificationCompat;
 import android.support.v4.app.NotificationManagerCompat;
 import android.view.View;
 import android.widget.Button;
+import android.widget.Toast;
 
 import com.jjoe64.graphview.DefaultLabelFormatter;
 import com.jjoe64.graphview.GraphView;
@@ -36,10 +40,16 @@ import com.jjoe64.graphview.series.DataPoint;
 import com.jjoe64.graphview.series.LineGraphSeries;
 import com.jjoe64.graphview.series.PointsGraphSeries;
 
+import org.eclipse.paho.client.mqttv3.DisconnectedBufferOptions;
+import org.eclipse.paho.client.mqttv3.IMqttActionListener;
 import org.eclipse.paho.client.mqttv3.IMqttDeliveryToken;
+import org.eclipse.paho.client.mqttv3.IMqttToken;
 import org.eclipse.paho.client.mqttv3.MqttCallbackExtended;
+import org.eclipse.paho.client.mqttv3.MqttConnectOptions;
+import org.eclipse.paho.client.mqttv3.MqttException;
 import org.eclipse.paho.client.mqttv3.MqttMessage;
 
+import java.io.UnsupportedEncodingException;
 import java.sql.Time;
 import java.text.SimpleDateFormat;
 import java.util.Calendar;
@@ -49,7 +59,11 @@ import java.util.Random;
 
 public class MainActivity extends AppCompatActivity {
 
-    Button mShowNotificationButton;
+    EditText mEditText;
+    double threshold = 40.0;
+
+    String temperature;
+    Button publish;
     NotificationCompat.Builder mBuilder;
     NotificationManager mNotificationManager;               // for < OREO
     private NotificationManagerCompat notificationManager;  // for >= OREO
@@ -100,15 +114,16 @@ public class MainActivity extends AppCompatActivity {
 
         //------------------------------------------------------------------------------------------
 
-        String title = "Hot Babe";
+        String title = "Hot Babe!";
         String message = "Critical Temperature!";
+        //Log.w("Temperature", temperature);
 
         // ------------------------------------------------------------------------------------------------------
         // BUILD<OREO
         //mShowNotificationButton = findViewById(R.id.btnShowNotification);
 
         mBuilder = new NotificationCompat.Builder(this);
-        mBuilder.setSmallIcon(R.mipmap.hot_babe); //set notification icon
+        mBuilder.setSmallIcon(R.drawable.hot_babe_notif2); //set notification icon
         mBuilder.setContentTitle(title); //set notification title
         mBuilder.setContentText(message); //set notification content
 
@@ -174,6 +189,8 @@ public class MainActivity extends AppCompatActivity {
 
         TempReceived = findViewById(R.id.Temp);
         TimeReceived = findViewById(R.id.Time);
+        mEditText = findViewById(R.id.editText);
+        //publish = findViewById(R.id.button2);
 
         CL = findViewById(R.id.Layout);
         Temperature = findViewById(R.id.LabelTemp);
@@ -213,7 +230,7 @@ public class MainActivity extends AppCompatActivity {
                         public void run() {
 
                             //lastX = 0;
-                            lastY = lastY+1;
+                            //lastY = lastY+1;
 
                             addEntry();
                             //series.resetData(DataPoint);
@@ -236,6 +253,7 @@ public class MainActivity extends AppCompatActivity {
         // here, we choose to display max 10 points on the viewport and we scroll to end
         series.appendData(new DataPoint(new Date().getTime(),lastY), true, 3600);
         seriesLine.appendData(new DataPoint(new Date().getTime(),lastY), true, 3600);
+        //temperature = Double.toString(lastY);
     }
 
     private void startMqtt(){
@@ -243,59 +261,65 @@ public class MainActivity extends AppCompatActivity {
         mqttHelper.setCallback(new MqttCallbackExtended() {
             @Override
             public void connectComplete(boolean b, String s) {
-
+                Toast.makeText(MainActivity.this, "Connected!", Toast.LENGTH_LONG).show();
             }
 
             @Override
             public void connectionLost(Throwable throwable) {
-
+                Toast.makeText(MainActivity.this, "Connection Lost!", Toast.LENGTH_LONG).show();
             }
 
             @Override
-            public void messageArrived(String topic, MqttMessage mqttMessage) throws Exception {
-                Log.w("mqtt_message_received",mqttMessage.toString());
-                String temperature = mqttMessage.toString();
-                lastY = Double.parseDouble(temperature);
-                //lastY = 41;
-                TimeReceived.setText(temperature+ DEGREE);
-                if (lastY > 40) {
-                    CL.setBackgroundColor(Color.parseColor("#FFC4B7"));
-                    getSupportActionBar().setBackgroundDrawable(new ColorDrawable(Color.parseColor("#CB3517")));
-                    Temperature.setTextColor(Color.rgb(97,16,0));
-                    Time.setTextColor(Color.rgb(97,16,0));
-                    setTitle ("Hot Babe");
-                    seriesLine.setColor(Color.rgb(198,0,0));
-                    series.setColor(Color.rgb(198,0,0));
-                    //TimeReceived.setTextColor(0x520E00);
-                    //send notification for builds equal greater than OREO
-                    if(Build.VERSION.SDK_INT >= Build.VERSION_CODES.O){
-                        notificationManager.notify(1,notification);
+            public void messageArrived(String topic, MqttMessage mqttMessage) {
+                Log.w("message", mqttMessage.toString());
+                        if(topic.equals("IC.embedded/apollostark/temperature")) {
+                            Log.w("mqtt_message_received", mqttMessage.toString());
+                            Log.w("topic", topic);
+                            String temperature = mqttMessage.toString();
+                            TimeReceived.setText(temperature + DEGREE);
+                            Calendar calendar = Calendar.getInstance();
+                            SimpleDateFormat mdformat = new SimpleDateFormat("HH:mm:ss");
+                            TempReceived.setText(mdformat.format(calendar.getTime()));
+                            lastY = Double.parseDouble(temperature);
+                            //threshold = Double.parseDouble(mEditText.getText().toString());
+                            //mEditText.setText(mEditText.getText().toString()+ DEGREE);
+                            //lastY = 41;
+                            if (lastY > threshold) {
+                                CL.setBackgroundColor(Color.parseColor("#FFC4B7"));
+                                getSupportActionBar().setBackgroundDrawable(new ColorDrawable(Color.parseColor("#CB3517")));
+                                Temperature.setTextColor(Color.rgb(97, 16, 0));
+                                Time.setTextColor(Color.rgb(97, 16, 0));
+                                setTitle("Hot Babe");
+                                seriesLine.setColor(Color.rgb(198, 0, 0));
+                                series.setColor(Color.rgb(198, 0, 0));
+                                //TimeReceived.setTextColor(0x520E00);
+                                //send notification for builds equal greater than OREO
+                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                                    notificationManager.notify(1, notification);
+                                }
+                                //send notification for builds less than OREO
+                                else {
+                                    mNotificationManager.notify(1, mBuilder.build());
+                                }
+                            } else {
+                                CL.setBackgroundColor(Color.parseColor("#D6E2F0"));
+                                getSupportActionBar().setBackgroundDrawable(new ColorDrawable(Color.parseColor("#4578B2")));
+                                Temperature.setTextColor(Color.rgb(4, 25, 50));
+                                Time.setTextColor(Color.rgb(4, 25, 50));
+                                setTitle("Cool Babe");
+                                seriesLine.setColor(Color.rgb(0, 22, 165));
+                                series.setColor(Color.rgb(0, 22, 165));
+                                //TimeReceived.setTextColor(0x520E00);
+                            }
+                        } else {
+                            threshold = Double.parseDouble(mEditText.getText().toString());
+                        }
                     }
-                    //send notification for builds less than OREO
-                    else{
-                        mNotificationManager.notify(1,mBuilder.build());
-                    }
-                }
-
-                else {
-                    CL.setBackgroundColor(Color.parseColor("#D6E2F0"));
-                    getSupportActionBar().setBackgroundDrawable(new ColorDrawable(Color.parseColor("#4578B2")));
-                    Temperature.setTextColor(Color.rgb(4,25,50));
-                    Time.setTextColor(Color.rgb(4,25,50));
-                    setTitle ("Cool Babe");
-                    seriesLine.setColor(Color.rgb(0,22,165));
-                    series.setColor(Color.rgb(0,22,165));
-                    //TimeReceived.setTextColor(0x520E00);
-                }
-                Calendar calendar = Calendar.getInstance();
-                SimpleDateFormat mdformat = new SimpleDateFormat("HH:mm:ss");
-                TempReceived.setText(mdformat.format(calendar.getTime()));
-            }
 
             @Override
             public void deliveryComplete(IMqttDeliveryToken iMqttDeliveryToken) {
+}
 
-            }
         });
     }
 
@@ -316,4 +340,74 @@ public class MainActivity extends AppCompatActivity {
             manager.createNotificationChannel(channel2);
         }
     }
+
+    //Setting the threshold
+
+    public void pub(View v) {
+        String topic_publish = "IC.embedded/apollostark/threshold";
+        String tmessage = mEditText.getText().toString();
+        //byte[] encodedPayload = new byte[0];
+        try {
+            mqttHelper.mqttAndroidClient.publish(topic_publish, tmessage.getBytes(),0, false);
+        } catch (MqttException e) {
+            e.printStackTrace();
+        }
+    }
+
+    public void connect(View v) throws MqttException {
+        MqttConnectOptions mqttConnectOptions = new MqttConnectOptions();
+        mqttConnectOptions.setAutomaticReconnect(true);
+        mqttConnectOptions.setCleanSession(false);
+        //mqttConnectOptions.setUserName(username);
+        //mqttConnectOptions.setPassword(password.toCharArray());
+
+        try {
+
+            mqttHelper.mqttAndroidClient.connect(mqttConnectOptions, null, new IMqttActionListener() {
+                @Override
+                public void onSuccess(IMqttToken asyncActionToken) {
+                    DisconnectedBufferOptions disconnectedBufferOptions = new DisconnectedBufferOptions();
+                    disconnectedBufferOptions.setBufferEnabled(true);
+                    disconnectedBufferOptions.setBufferSize(100);
+                    disconnectedBufferOptions.setPersistBuffer(false);
+                    disconnectedBufferOptions.setDeleteOldestMessages(false);
+                    mqttHelper.mqttAndroidClient.setBufferOpts(disconnectedBufferOptions);
+                    mqttHelper.subscribeToTopic();
+                    Toast.makeText(MainActivity.this, "Connected!", Toast.LENGTH_LONG).show();
+                }
+
+                @Override
+                public void onFailure(IMqttToken asyncActionToken, Throwable exception) {
+                    //Log.w("Mqtt", "Failed to connect to: " + serverUri + exception.toString());
+                    Toast.makeText(MainActivity.this, "unable to Connect!", Toast.LENGTH_LONG).show();
+                }
+            });
+
+
+        } catch (MqttException ex){
+            ex.printStackTrace();
+        }
+    }
+
+    public void disconnect (View v){
+        try {
+            IMqttToken token = mqttHelper.mqttAndroidClient.disconnect();
+            token.setActionCallback(new IMqttActionListener() {
+                @Override
+                public void onSuccess(IMqttToken asyncActionToken) {
+                    // We are connected
+                    Toast.makeText(MainActivity.this, "Successfully Disconnected!", Toast.LENGTH_LONG).show();
+                }
+
+                @Override
+                public void onFailure(IMqttToken asyncActionToken, Throwable exception) {
+                    // Something went wrong e.g. connection timeout or firewall problems
+                    Toast.makeText(MainActivity.this, "Disconnection failed", Toast.LENGTH_LONG).show();
+                }
+            });
+        } catch (MqttException e) {
+            e.printStackTrace();
+        }
+    }
+
 }
