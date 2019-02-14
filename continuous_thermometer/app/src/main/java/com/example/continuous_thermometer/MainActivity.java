@@ -192,6 +192,7 @@ public class MainActivity extends AppCompatActivity {
         mEditText = findViewById(R.id.editText);
         //publish = findViewById(R.id.button2);
 
+        mEditText.setText(String.valueOf(threshold));
         CL = findViewById(R.id.Layout);
         Temperature = findViewById(R.id.LabelTemp);
         Time = findViewById(R.id.LabelTime);
@@ -349,6 +350,10 @@ public class MainActivity extends AppCompatActivity {
         //byte[] encodedPayload = new byte[0];
         try {
             mqttHelper.mqttAndroidClient.publish(topic_publish, tmessage.getBytes(),0, false);
+            InputMethodManager imm = ((InputMethodManager) getSystemService(Activity.INPUT_METHOD_SERVICE));
+            imm.hideSoftInputFromWindow(getWindow().getCurrentFocus().getWindowToken(), 0);
+            Toast.makeText(MainActivity.this, "Critical Temperature set to " + mEditText.getText().toString() + DEGREE , Toast.LENGTH_LONG).show();
+            mEditText.setText(mEditText.getText().toString());
         } catch (MqttException e) {
             e.printStackTrace();
         }
@@ -408,6 +413,10 @@ public class MainActivity extends AppCompatActivity {
         } catch (MqttException e) {
             e.printStackTrace();
         }
+    }
+
+    public void clear(View view){
+        mEditText.getText().clear();
     }
 
 }
