@@ -27,7 +27,7 @@ time.sleep(1)
 		
 def on_message(client,userdata,message):
 	global threshold
-	threshold = float(message.payload.decode("utf-8"))	
+	threshold = float(message.payload.decode("utf-8")) # Gets threshold from the MQTT server sent from the app
 
 #Instantiating MQTT client	
 client = mqtt.Client()
@@ -62,10 +62,10 @@ while True:
 	
 	
 	if (cTemp >= threshold):
-		p.ChangeDutyCycle(50)
+		p.ChangeDutyCycle(50)	#sends a 50% pulse to the microbuzzer to sound it when >threshold
 		time.sleep(delay)
 	else:
-		p.ChangeDutyCycle(0)
+		p.ChangeDutyCycle(0)	#sends no pulse to the microbuzzer when <threshold
 
 	client.loop()
 	client.loop_start()
