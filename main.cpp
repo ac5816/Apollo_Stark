@@ -1,6 +1,14 @@
 #include "SHA256.h"
 #include "mbed.h"
 
+//Timer
+Timer t;
+Ticker time_up;
+
+//Global Variables
+int i;
+float interval;
+
 //Photointerrupter input pins
 #define I1pin D3
 #define I2pin D6
@@ -107,7 +115,7 @@ int8_t motorHome() {
 void interrupt() {
     int8_t orState = 0;    //Rotot offset at motor state 0
     int8_t intState = 0;
-    int8_t intStateOld = 0;
+    //int8_t intStateOld = 0;
     
 //    //Run the motor synchronisation
 //    orState = motorHome();
@@ -115,11 +123,9 @@ void interrupt() {
 //    //orState is subtracted from future rotor state inputs to align rotor and motor states
     
     intState = readRotorState();
-    if (intState != intStateOld) {
-        intStateOld = intState;
-        motorOut((intState-orState+lead+6)%6); //+6 to make sure the remainder is positive
+        
+    motorOut((intState-orState+lead+6)%6); //+6 to make sure the remainder is positive
         //pc.printf("%d\n\r",intState);
-    }
 }
 
 //Main
@@ -129,17 +135,19 @@ int main() {
     Serial pc(SERIAL_TX, SERIAL_RX);
     pc.printf("Hello\n\r");
     
-       SHA256 sha256;
+    SHA256 sha256;
+    int counter = 0;
+    
+    interrupt();
     
     I1.rise(&interrupt);
+    //I1.fall(&interrupt);
     I2.rise(&interrupt);
+    //I2.fall(&interrupt);
     I3.rise(&interrupt);
+    //I3.fall(&interrupt);
     
-    int i = 0;
-    
-    while (1) {
-        
-        uint8_t sequence[] = {0x45,0x6D,0x62,0x65,0x64,0x64,0x65,0x64,
+    uint8_t sequence[] = {0x45,0x6D,0x62,0x65,0x64,0x64,0x65,0x64,
                               0x20,0x53,0x79,0x73,0x74,0x65,0x6D,0x73,
                               0x20,0x61,0x72,0x65,0x20,0x66,0x75,0x6E,
                               0x20,0x61,0x6E,0x64,0x20,0x64,0x6F,0x20,
@@ -147,21 +155,34 @@ int main() {
                               0x74,0x68,0x69,0x6E,0x67,0x73,0x21,0x20,
                               0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
                               0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00};
-        uint64_t* key = (uint64_t*)((int)sequence + 48);
-        uint64_t* nonce = (uint64_t*)((int)sequence + 56);
-        uint8_t hash[32];
+    uint64_t* key = (uint64_t*)((int)sequence + 48);
+    uint64_t* nonce = (uint64_t*)((int)sequence + 56);
+    uint8_t hash[32];
+    
+    t.start();
+    int start_time = t.read_ms();
+    
+    while (1) {
         
-        sha256.computeHash(hash, (uint8_t*)nonce, 64);
+        *nonce += 1; 
+        
+        i = 0;
+        
+        //nonce = (uint64_t*)((int)nonce + 1);
+        
+        sha256.computeHash(&hash[0], &sequence[0], 64);
+        counter++;
+        
         if (hash[0] == 0 && hash[1] == 0) {
-            pc.printf("%c", hash[0]);
-            pc.printf("%c", hash[1]);
+            pc.printf("Nonce: %x\r\n", *nonce);
+//            pc.printf("%c", hash[1]);
+            i++;
         }
         
-        if (i == 64) {
-            i = 0;
-        }
-        else {
-            i++;
+        if (t.read_ms() - start_time >= 1000) {
+            pc.printf("The hash rate is: %d \r\n", counter);
+            start_time = t.read_ms();
+            counter = 0;           
         }
     }
 }
