@@ -1,0 +1,517 @@
+#include "mbed.h"
+#include "SHA256.h"
+//Photointerrupter input pins
+#define I1pin D3
+#define I2pin D6
+#define I3pin D5
+
+//Incremental encoder input pins
+#define CHApin   D12
+#define CHBpin   D11
+
+//Motor Drive output pins   //Mask in output byte
+#define L1Lpin D1           //0x01
+#define L1Hpin A3           //0x02
+#define L2Lpin D0           //0x04
+#define L2Hpin A6          //0x08
+#define L3Lpin D10           //0x10
+#define L3Hpin D2          //0x20
+#define PWMpin D9
+#define MAXIMUM_LENGTH_OF_INPUT_COMMAND 18 // store '\0' as a termination sequence
+//Motor current sense
+#define MCSPpin   A1
+#define MCSNpin   A0
+
+int position = 0;
+int velocityCounter = 0;
+int velocity = 0;
+
+volatile int32_t motorPos_start;
+volatile int32_t motor_torque=500;
+
+
+
+//Mapping from sequential drive states to motor phase outputs
+/*
+ State   L1  L2  L3
+ 0       H   -   L
+ 1       -   H   L
+ 2       L   H   -
+ 3       L   -   H
+ 4       -   L   H
+ 5       H   L   -
+ 6       -   -   -
+ 7       -   -   -
+ */
+//Drive state to output table
+const int8_t driveTable[] = {0x12,0x18,0x09,0x21,0x24,0x06,0x00,0x00};
+
+//Mapping from interrupter inputs to sequential rotor states. Index 0x00 and 0x07 are not valid
+const int8_t stateMap[] = {0x07,0x05,0x03,0x04,0x01,0x00,0x02,0x07};
+//const int8_t stateMap[] = {0x07,0x01,0x03,0x02,0x05,0x00,0x04,0x07}; //Alternative if phase order of input or drive is reversed
+
+//Phase lead to make motor spin
+int8_t lead = 2;  //2 for forwards, -2 for backwards
+int8_t orState = 0;    //Rotate offset at motor state 0
+
+uint8_t sequence[]={
+    
+    0x45,0x6D,0x62,0x65,0x64,0x64,0x65,0x64,0x20,0x53,0x79,0x73,0x74,0x65,0x6D,0x73,0x20,0x61,0x72,0x65,0x20,0x66,
+    0x75,0x6E,0x20,0x61,0x6E,0x64,0x20,0x64,0x6F,0x20,0x61,0x77,0x65,0x73,0x6F,0x6D,0x65,0x20,0x74,0x68,0x69,0x6E,
+    0x67,0x73,0x21,0x20,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00
+    
+};
+
+uint64_t* key =(uint64_t*)((int)sequence +48);
+uint64_t* nonce =(uint64_t*)((int)sequence +56);
+uint8_t hash[32];
+
+// Mutexes for shared variables
+Mutex newKey_mutex;
+Mutex new_rotation_mutex; // r
+Mutex new_speed_mutex;                    // v
+Mutex hashRate_mutex;
+
+// Variables that will hold the parsed incoming message
+uint64_t   newKey;             // for case 'K' in 'decodeMessageFromQueue'
+float new_rotation;   // for case 'R'
+float new_speed;                   // for case 'V'
+float newpwmDutyCycle = 1.0;
+
+// HashRate updated in main
+int hashRate = 0;
+Timer timer;
+
+// PWM pin
+PwmOut pwm(PWMpin);
+
+//Status LED
+DigitalOut led1(LED1);
+
+// Find direction of movement
+int8_t intStateOld           = 0; // previous rotor state
+int currentPosition          = 0; // 6 * number of revolutions - avoid floating point arithmetic
+
+// Proportional speed controller
+float proportionalSpeedController;
+int   proportionalConstant;
+
+//Photointerrupter inputs
+InterruptIn I1(I1pin);
+InterruptIn I2(I2pin);
+InterruptIn I3(I3pin);
+
+//Motor Drive outputs
+DigitalOut L1L(L1Lpin);
+DigitalOut L1H(L1Hpin);
+DigitalOut L2L(L2Lpin);
+DigitalOut L2H(L2Hpin);
+DigitalOut L3L(L3Lpin);
+DigitalOut L3H(L3Hpin);
+
+//Raw serial inputs to create an ISR to recieve each incoming byte and place it into a queue
+RawSerial pc(SERIAL_TX, SERIAL_RX);
+Queue<void, 8> inCharQ;
+
+// mail data structure for printing messages on queue - done :D
+typedef struct {
+    bool       checknonce;
+    
+    uint64_t   nonce;
+    float      velocityToPrint;
+    float      positionToPrint;
+} message_t;
+
+Mail<message_t, 16> printQueue;
+
+// function to place message on the print queue - done :D
+void putMessageOnPrintQueue(bool truenonce, uint64_t noncePrint, float positionPrint, float velocityPrint) {
+    
+    message_t *mail = printQueue.alloc();
+    
+    mail -> checknonce = truenonce;
+    
+    if (truenonce) {
+        mail -> nonce = noncePrint;
+    }
+    
+    else {
+        mail -> positionToPrint = positionPrint;
+        mail -> velocityToPrint = velocityPrint;
+        
+    }
+    
+    printQueue.put(mail);                // puts message in queue
+}
+
+Thread receive_message;
+Thread serialsend_thread;
+Thread motorCtrlT(osPriorityNormal, 1024); // thread to run a task every 1000ms, 1024 bytes stack size
+int currentInstructionIndex = 0;
+
+char command[MAXIMUM_LENGTH_OF_INPUT_COMMAND];
+
+// Receives incoming characters and puts them in a queue - done :D
+void serialISR(){
+    uint8_t newChar = pc.getc();
+    inCharQ.put((void*)newChar);
+}
+
+// Working function - done :D
+void decode_message(char* char_comm_arr)
+{
+    volatile uint64_t received_key;
+    volatile float received_new_rotation;
+    volatile float received_new_speed;
+    
+    if (char_comm_arr[0]=='R'){
+ sscanf(char_comm_arr, "R%f", &received_new_rotation); // float due to decimal point
+            new_rotation_mutex.lock();
+            new_rotation = received_new_rotation;
+            new_rotation_mutex.unlock();
+            pc.printf("New Revolution is: %f", new_rotation);
+}
+
+else if (char_comm_arr[0]=='V'){
+ sscanf(char_comm_arr, "V%f", &received_new_speed);
+            new_speed_mutex.lock();
+            new_speed = received_new_speed;
+            new_speed_mutex.unlock();
+            pc.printf("New maximum velocity is: %f", new_speed);
+}
+
+else if (char_comm_arr[0]=='K'){
+   sscanf(char_comm_arr, "K%llx", &received_key); // 64 bit hex
+            newKey_mutex.lock();
+            newKey = received_key;
+            newKey_mutex.unlock();
+            pc.printf("New received key is: %f", newKey);
+ 
+}
+else{
+}
+
+
+}
+
+// working function - done :D
+void incomingComms() {
+    pc.attach(&serialISR);
+    while(1) {
+        osEvent newEvent = inCharQ.get();
+        uint8_t newChar = *((uint8_t*)(&newEvent.value.p)); // places chars in a queue - no need for mutex
+        
+        if(newChar != '\r' && currentInstructionIndex < MAXIMUM_LENGTH_OF_INPUT_COMMAND - 2) {
+            command[currentInstructionIndex++] = newChar;    // append character
+        }
+        else {
+            command[currentInstructionIndex++]= '\0'; // append '\0'
+            currentInstructionIndex = 0;                      // reset
+            decode_message(command);
+        }
+    }
+}
+
+// Set a given drive state
+// drive state is used to turn on/off certain transistors - done :D
+void motorOut(int8_t driveState){
+    
+    // Lookup the output byte from the drive state.
+    // selecting 3 LSBs with 0x07
+    int8_t driveOut = driveTable[driveState & 0x07];
+    
+    // Turn off first
+    if (~driveOut & 0x01) L1L = 0;
+    if (~driveOut & 0x02) L1H = 1;
+    if (~driveOut & 0x04) L2L = 0;
+    if (~driveOut & 0x08) L2H = 1;
+    if (~driveOut & 0x10) L3L = 0;
+    if (~driveOut & 0x20) L3H = 1;
+    
+    // Then turn on
+    // selecting each bit:
+    if (driveOut & 0x01) L1L = 1;
+    if (driveOut & 0x02) L1H = 0;
+    if (driveOut & 0x04) L2L = 1;
+    if (driveOut & 0x08) L2H = 0;
+    if (driveOut & 0x10) L3L = 1;
+    if (driveOut & 0x20) L3H = 0;
+}
+
+// Convert photointerrupter inputs to a rotor state - done :D
+inline int8_t readRotorState(){
+    return stateMap[I1 + 2*I2 + 4*I3];
+}
+
+// Determines the direction of movement - done :D
+void photointerrupt_ISR(void){
+    
+    int8_t intState, directionOfMovement;
+    intState = readRotorState();                    // intState is the current state
+    
+    directionOfMovement = intState - intStateOld;
+    
+    if (directionOfMovement == -5)                  // from position 5 to position 0 (only want a step of 1)
+    {
+        directionOfMovement = 1;
+    }
+    else if (directionOfMovement == 5)              // from position 0 to position 5 (only want a step of -1)
+    {
+        directionOfMovement = -1;
+    }
+    
+    currentPosition += directionOfMovement;
+    
+    intStateOld = intState;
+    // TODO add a mutex: any shared variables between 2 tasks
+    motorOut((intState-orState+lead+6)%6); // +6 to make sure the remainder is positive
+}
+
+//Basic synchronisation routine - done :D
+int8_t motorHome() {
+    //Put the motor in drive state 0 and wait for it to stabilise
+    motorOut(0);
+    wait(2.0);
+    
+    //Get the rotor state
+    return readRotorState();
+}
+
+// ISR - done :D
+void motorCtrlTick(){
+    
+    motorCtrlT.signal_set(0x1); // Tick goes high once every 100ms
+}
+
+// fn that runs every 100ms
+void motorCtrlFn(){
+    
+    int previousPosition = 0;
+    int currentPosition = 0;
+    
+    // velocity control variables
+    int32_t velocity = 0;
+    int32_t k_ps = 25;
+    float es;
+    
+    // position control variables
+    int32_t k_pr = 30;
+    int32_t k_dr = 20;
+    float er;
+    float er_old = 0;
+    float er_d;
+    float er_d_old;
+    int32_t motor_torque_pos;
+    int32_t motor_torque_vel;
+    
+    int8_t sgn_er;
+    int8_t sgn_er_d;
+    
+    Ticker motorCtrlTicker;
+    motorCtrlTicker.attach_us(&motorCtrlTick, 100000); // attach tick
+
+    while(1) {
+         motorCtrlT.signal_wait(0x1);
+         core_util_critical_section_enter();
+        previousPosition = position;
+        core_util_critical_section_exit();
+
+        core_util_critical_section_enter();
+        currentPosition = position;
+        core_util_critical_section_exit();
+
+        velocity = ((currentPosition - previousPosition) * 10)/6;
+        velocityCounter++; 
+        
+        //------------ velocity control code
+        
+    
+        
+        er = new_rotation - (currentPosition - motorPos_start); // receivedRotations is what the user inputs
+        
+        er_d_old = er_d ;
+        er_d = (er_d - er_d_old)*10;
+        if (er_d <0){
+            sgn_er_d = -1;
+            er_d = -1*er_d ;
+        }
+        else{
+            sgn_er_d = 1;
+        }
+        es = new_speed-er_d;
+        
+        if(sgn_er_d == 1){
+            
+            motor_torque_vel = k_ps* es ;
+        }
+        else if (sgn_er_d == -1){
+            motor_torque_vel = -1 * k_ps* es ;
+        }
+        else {
+        }
+
+        
+        pwm.pulsewidth_us(motor_torque_vel);
+        /*      
+        
+        //------------ position control code
+        //er = new_rotation - (currentPosition - motorPos_start); // receivedRotations is what the user inputs
+        
+        er_d_old = er_d ;
+        er_d = (er_d - er_d_old)*10;
+        //er_d = er_d * 0.9 + er_d_old * 0.1;
+        if(er <0){
+            sgn_er = -1 ;
+        }
+        else{
+            sgn_er = 1;
+        }
+        //  PD controller for Position control
+        motor_torque_pos = k_pr*er + k_dr*er_d ;
+        //pwm.pulsewidth_us(motor_torque_pos);
+        
+        //---------------- choosing which torque control
+        if(er_d>=0){
+            sgn_er_d = 1;
+            if(motor_torque_vel<motor_torque_pos){
+                motor_torque = motor_torque_vel;
+            }
+            else if (motor_torque_vel>motor_torque_pos){
+                    motor_torque = motor_torque_pos;
+            }
+            else{
+                motor_torque = motor_torque_vel;
+            }
+        }
+        
+        else{
+            sgn_er_d = -1;
+            if(motor_torque_vel<motor_torque_pos){
+                motor_torque = motor_torque_pos;
+            }
+            else if (motor_torque_vel>motor_torque_pos){
+                    motor_torque = motor_torque_vel;
+            }
+            else{
+                motor_torque = motor_torque_vel;
+            }
+        } 
+        pwm.pulsewidth(motor_torque);
+        */
+    } 
+    
+    
+}
+
+
+// Takes mail off queue and prints the message - done :D
+void serialsend() {
+    
+    while (1) {
+        
+        osEvent evt = printQueue.get();
+        
+        if (evt.status == osEventMail) {
+            
+            message_t *mail = (message_t*)evt.value.p;
+            
+            if (mail -> checknonce) {
+                pc.printf("Nonce is %lli", mail->nonce);
+            }
+            
+            else {
+//                pc.printf("Velocity is %f \n\r", mail -> velocityToPrint);
+//                pc.printf("Position is %f \n\r", mail -> positionToPrint);
+            }
+            
+            printQueue.free(mail);
+        }
+    }
+}
+
+
+int main() {
+    
+    pc.printf("Hello Dr. Stott :)\n\r");
+    
+    // Set up threads
+    receive_message.start(incomingComms);
+    serialsend_thread.start(serialsend);
+    motorCtrlT.start(motorCtrlFn);
+    
+    // PWM for motor torque - do before the motor synchronisation initially
+    float pwmPeriodInSeconds = 0.002;
+    float pwmDutyCycle       = 1.0;
+    pwm.period(pwmPeriodInSeconds);
+    pwm.write(pwmDutyCycle);
+    
+    // Run the motor synchronisation
+    orState = motorHome();              // orState is initial motor position offset
+    pc.printf("Rotor origin: %x\n\r",orState);
+    
+    // orState is subtracted from future rotor state inputs to align rotor and motor states
+    I1.rise(&photointerrupt_ISR);
+    I1.fall(&photointerrupt_ISR);
+    I2.rise(&photointerrupt_ISR);
+    I2.fall(&photointerrupt_ISR);
+    I3.rise(&photointerrupt_ISR);
+    I3.fall(&photointerrupt_ISR);
+    
+    SHA256 SHA256instance;
+    
+    timer.start();
+    int timeStart = timer.read_ms();
+    int hashRateCounter                    = 0;
+    int timeToUpdateHashRateInMilliseconds = 1000;
+    
+    // local velocity calculations
+    // int tempVelocityCalculationCount;
+    
+    // Poll the rotor state and set the motor outputs accordingly to spin the motor
+    while (1)
+    {
+        newKey_mutex.lock();
+        (*key) = newKey;
+        newKey_mutex.unlock();
+        
+        //        newpwmDutyCycle_mutex.lock();
+        //        pwmDutyCycle = newpwmDutyCycle;     // don't pwm.write(newpwmDutyCycle) in here
+        //        newpwmDutyCycle_mutex.unlock();       // don't want to call a function in a mutex - mutex will take too long to run
+        //        //tempVelocityCalculationCount = velocityCalculationCount;
+        //
+        //        pwm.write(pwmDutyCycle);
+        
+        //putMessageOnPrintQueue(pwmDutyCycleMessage, 0, pwmDutyCycle);
+        
+        SHA256instance.computeHash(hash, sequence, 64);
+        
+        hashRateCounter++;
+        
+        int timeEnd                    = timer.read_ms();
+        int timeElapsedInMilliseconds  = timeEnd - timeStart;
+        
+        if (timeElapsedInMilliseconds >= timeToUpdateHashRateInMilliseconds)
+        {
+            //pc.printf("The hash rate is: %i \n\r", hashRateCounter);
+            hashRate_mutex.lock();
+            hashRate                   = hashRateCounter;
+            hashRate_mutex.unlock();
+            
+            //putMessageOnPrintQueue(true, *nonce, 0.0,0.0);
+            hashRateCounter            = 0;
+            timeStart                  = timer.read_ms(); // Acts as a reset
+        }
+        
+        // to update position and velocity
+        // updating velocityCalculationCount every 0.1s
+        // want to print every second
+        //        if (tempVelocityCalculationCount == 10)
+        //        {
+        //            newKey_mutex.lock();
+        //            pc.printf("Velocity is: %i\n\r", velocity);
+        //            velocityCalculationCount = 0; // reset
+        //            newKey_mutex.unlock();
+        //        }
+        
+    }
+}
